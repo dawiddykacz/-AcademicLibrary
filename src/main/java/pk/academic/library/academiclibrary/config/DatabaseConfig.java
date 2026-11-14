@@ -10,8 +10,7 @@ import org.springframework.data.mongodb.repository.config.EnableMongoRepositorie
 
 @Configuration
 @EnableJpaRepositories(
-        basePackages = "pk.academic.library.academiclibrary.sql",
-        transactionManagerRef = "transactionManager"
+        basePackages = "pk.academic.library.academiclibrary.sql"
 )
 @EnableNeo4jRepositories(
         basePackages = "pk.academic.library.academiclibrary.neo4j",
