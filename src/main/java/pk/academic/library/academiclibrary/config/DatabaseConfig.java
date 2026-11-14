@@ -1,7 +1,10 @@
 package pk.academic.library.academiclibrary.config;
 
+import org.neo4j.driver.Driver;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
+import org.springframework.data.neo4j.core.transaction.Neo4jTransactionManager;
 import org.springframework.data.neo4j.repository.config.EnableNeo4jRepositories;
 import org.springframework.data.mongodb.repository.config.EnableMongoRepositories;
 
@@ -18,4 +21,9 @@ import org.springframework.data.mongodb.repository.config.EnableMongoRepositorie
         basePackages = "pk.academic.library.academiclibrary.mongo"
 )
 public class DatabaseConfig {
+
+    @Bean(name = "neo4jTransactionManager")
+    public Neo4jTransactionManager neo4jTransactionManager(Driver driver) {
+        return new Neo4jTransactionManager(driver);
+    }
 }

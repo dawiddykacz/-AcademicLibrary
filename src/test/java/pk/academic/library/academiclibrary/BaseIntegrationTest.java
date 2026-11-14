@@ -17,7 +17,7 @@ public abstract class BaseIntegrationTest {
     static MongoDBContainer mongo = new MongoDBContainer("mongo:6.0");
 
     static Neo4jContainer<?> neo4j = new Neo4jContainer<>("neo4j:5.9")
-            .withoutAuthentication();
+            .withAdminPassword("password");
 
     static {
         postgres.start();
@@ -34,7 +34,7 @@ public abstract class BaseIntegrationTest {
         registry.add("spring.data.mongodb.uri", mongo::getReplicaSetUrl);
 
         registry.add("spring.neo4j.uri", neo4j::getBoltUrl);
-        registry.add("spring.neo4j.authentication.username", () -> "");
-        registry.add("spring.neo4j.authentication.password", () -> "");
+        registry.add("spring.neo4j.authentication.username", () -> "neo4j");
+        registry.add("spring.neo4j.authentication.password", () -> "password");
     }
 }
