@@ -31,7 +31,9 @@ public abstract class BaseIntegrationTest {
         registry.add("spring.datasource.username", postgres::getUsername);
         registry.add("spring.datasource.password", postgres::getPassword);
 
-        registry.add("spring.data.mongodb.uri", mongo::getReplicaSetUrl);
+        registry.add("spring.data.mongodb.uri", () ->
+                String.format("mongodb://%s:%d/library_test", mongo.getHost(), mongo.getFirstMappedPort())
+        );
 
         registry.add("spring.neo4j.uri", neo4j::getBoltUrl);
         registry.add("spring.neo4j.authentication.username", () -> "neo4j");
