@@ -6,25 +6,24 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.MongoDBContainer;
 import org.testcontainers.containers.Neo4jContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 @SpringBootTest
-@Testcontainers
 public abstract class BaseIntegrationTest {
-
-    @Container
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine")
             .withDatabaseName("library_test")
             .withUsername("test")
             .withPassword("test");
 
-    @Container
     static MongoDBContainer mongo = new MongoDBContainer("mongo:6.0");
 
-    @Container
     static Neo4jContainer<?> neo4j = new Neo4jContainer<>("neo4j:5.9")
             .withoutAuthentication();
+
+    static {
+        postgres.start();
+        mongo.start();
+        neo4j.start();
+    }
 
     @DynamicPropertySource
     static void configureProperties(DynamicPropertyRegistry registry) {
