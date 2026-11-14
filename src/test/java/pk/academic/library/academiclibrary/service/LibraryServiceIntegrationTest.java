@@ -4,6 +4,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import pk.academic.library.academiclibrary.BaseIntegrationTest;
+import pk.academic.library.academiclibrary.dto.PublicationPageDto;
+import pk.academic.library.academiclibrary.dto.ReaderProfileDto;
+import pk.academic.library.academiclibrary.mongo.ActivityEventRepository;
+import pk.academic.library.academiclibrary.mongo.documents.ActivityEvent;
+import pk.academic.library.academiclibrary.mongo.documents.Publication;
+import pk.academic.library.academiclibrary.mongo.PublicationRepository;
 import pk.academic.library.academiclibrary.neo4j.PublicationNodeRepository;
 import pk.academic.library.academiclibrary.neo4j.ReaderNodeRepository;
 import pk.academic.library.academiclibrary.neo4j.node.PublicationNode;
@@ -18,29 +24,22 @@ import pk.academic.library.academiclibrary.sql.entities.Borrowing;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 public class LibraryServiceIntegrationTest extends BaseIntegrationTest {
 
-    @Autowired
-    private LibraryService libraryService;
+    @Autowired private LibraryService libraryService;
+    @Autowired private ReaderRepository readerRepository;
+    @Autowired private BookCopyRepository bookCopyRepository;
+    @Autowired private BorrowingRepository borrowingRepository;
+    @Autowired private ReaderNodeRepository readerNodeRepository;
+    @Autowired private PublicationNodeRepository publicationNodeRepository;
 
-    @Autowired
-    private ReaderRepository readerRepository;
-
-    @Autowired
-    private BookCopyRepository bookCopyRepository;
-
-    @Autowired
-    private BorrowingRepository borrowingRepository;
-
-    @Autowired
-    private ReaderNodeRepository readerNodeRepository;
-
-    @Autowired
-    private PublicationNodeRepository publicationNodeRepository;
+    @Autowired private ActivityEventRepository activityEventRepository;
+    @Autowired private PublicationRepository publicationRepository;
 
     private String readerId;
     private String copyId;
@@ -53,6 +52,8 @@ public class LibraryServiceIntegrationTest extends BaseIntegrationTest {
         readerRepository.deleteAll();
         readerNodeRepository.deleteAll();
         publicationNodeRepository.deleteAll();
+        activityEventRepository.deleteAll();
+        publicationRepository.deleteAll();
 
         readerId = UUID.randomUUID().toString();
         copyId = UUID.randomUUID().toString();
@@ -69,33 +70,38 @@ public class LibraryServiceIntegrationTest extends BaseIntegrationTest {
 
         PublicationNode neo4jPublication = new PublicationNode(publicationId, "Spring Boot Microservices", new HashSet<>(), new HashSet<>());
         publicationNodeRepository.save(neo4jPublication);
+
+        Publication mongoPub = new Publication(publicationId, "Spring Boot Microservices", "BOOK", "123-456", Map.of(), List.of());
+        publicationRepository.save(mongoPub);
     }
 
     @Test
-    void shouldSuccessfullyBorrowBookAndSyncAcrossDatabases() {
+    void shouldSuccessfullyBorrowBookAndSyncAcrossAllThreeDatabases() {
         assertEquals(0, borrowingRepository.count(), "Baza SQL powinna być pusta przed wypożyczeniem");
 
         libraryService.borrowBook(readerId, copyId);
 
         BookCopy updatedCopy = bookCopyRepository.findById(copyId).orElseThrow();
-        assertEquals(CopyStatus.BORROWED, updatedCopy.getStatus(), "Status egzemplarza w SQL musi zmienić się na BORROWED");
+        assertEquals(CopyStatus.BORROWED, updatedCopy.getStatus());
 
         List<Borrowing> borrowings = borrowingRepository.findAll();
-        assertEquals(1, borrowings.size(), "Musi zostać utworzony dokładnie jeden rekord wypożyczenia w SQL");
-        Borrowing borrowing = borrowings.get(0);
-        assertEquals(readerId, borrowing.getReader().getId(), "Wypożyczenie w SQL musi wskazywać na poprawnego czytelnika");
-        assertEquals(copyId, borrowing.getBookCopy().getId(), "Wypożyczenie w SQL musi wskazywać na poprawny egzemplarz");
+        assertEquals(1, borrowings.size());
+        assertEquals(readerId, borrowings.get(0).getReader().getId());
 
         ReaderNode updatedReaderNode = readerNodeRepository.findById(readerId).orElseThrow();
-        assertNotNull(updatedReaderNode.getBorrowedPublications(), "Zbiór wypożyczeń w Neo4j nie może być null");
-        assertEquals(1, updatedReaderNode.getBorrowedPublications().size(), "W Neo4j musi pojawić się jedna relacja wypożyczenia");
+        assertNotNull(updatedReaderNode.getBorrowedPublications());
+        assertEquals(1, updatedReaderNode.getBorrowedPublications().size());
+        assertEquals(publicationId, updatedReaderNode.getBorrowedPublications().iterator().next().getId());
 
-        PublicationNode linkedPublication = updatedReaderNode.getBorrowedPublications().iterator().next();
-        assertEquals(publicationId, linkedPublication.getId(), "Relacja w Neo4j musi wskazywać na poprawne ID publikacji");
+        List<ActivityEvent> events = activityEventRepository.findAll();
+        assertEquals(1, events.size(), "W MongoDB powinno pojawić się jedno zdarzenie po pomyślnym wypożyczeniu");
+        assertEquals("BORROW", events.get(0).getEventType());
+        assertEquals(readerId, events.get(0).getReaderId());
+        assertEquals(publicationId, events.get(0).getPublicationId());
     }
 
     @Test
-    void shouldRollbackSqlAndNotSyncToNeo4jWhenBookIsNotAvailable() {
+    void shouldRollbackSqlAndNotSyncToNoSqlDatabasesWhenBookIsNotAvailable() {
         BookCopy copy = bookCopyRepository.findById(copyId).orElseThrow();
         copy.setStatus(CopyStatus.BORROWED);
         bookCopyRepository.save(copy);
@@ -108,6 +114,44 @@ public class LibraryServiceIntegrationTest extends BaseIntegrationTest {
         assertEquals(0, borrowingRepository.count());
 
         ReaderNode unchangedReaderNode = readerNodeRepository.findById(readerId).orElseThrow();
-        assertTrue(unchangedReaderNode.getBorrowedPublications().isEmpty(), "Neo4j nie powinno zawierać relacji przy wycofanej transakcji w SQL");
+        assertTrue(unchangedReaderNode.getBorrowedPublications().isEmpty());
+
+        assertEquals(0, activityEventRepository.count(), "Błąd w SQL musi powstrzymać zapis zdarzenia w MongoDB");
+    }
+
+    @Test
+    void shouldFetchPublicationPageCrossingAllThreeDatabases() {
+        PublicationPageDto dto = libraryService.getPublicationPage(publicationId, readerId);
+
+        assertNotNull(dto);
+        assertEquals("Spring Boot Microservices", dto.publicationDetails().getTitle());
+        assertEquals(1, dto.availableCopiesCount());
+        assertNotNull(dto.alsoBorrowed());
+
+        List<ActivityEvent> events = activityEventRepository.findAll();
+        assertEquals(1, events.size());
+        assertEquals("VIEW", events.get(0).getEventType());
+    }
+
+    @Test
+    void shouldFetchReaderProfileCrossingAllThreeDatabases() {
+        libraryService.borrowBook(readerId, copyId);
+
+        libraryService.getPublicationPage(publicationId, readerId);
+
+        ReaderProfileDto dto = libraryService.getReaderProfile(readerId);
+
+        assertNotNull(dto);
+        assertEquals(readerId, dto.readerId());
+
+        assertFalse(dto.borrowingHistory().isEmpty(), "Historia wypożyczeń z SQL nie powinna być pusta");
+        assertEquals(copyId, dto.borrowingHistory().get(0).getBookCopy().getId());
+        assertEquals(publicationId, dto.borrowingHistory().get(0).getBookCopy().getPublicationId());
+
+        assertFalse(dto.recentlyViewed().isEmpty(), "Lista ostatnio oglądanych z MongoDB nie powinna być pusta");
+        assertEquals(publicationId, dto.recentlyViewed().get(0).getId());
+        assertEquals("Spring Boot Microservices", dto.recentlyViewed().get(0).getTitle());
+
+        assertNotNull(dto.recommendations(), "Lista rekomendacji z Neo4j nie powinna być nullem");
     }
 }
