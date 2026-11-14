@@ -41,7 +41,7 @@ public class LibraryService {
     private final ApplicationEventPublisher eventPublisher;
 
 
-    @Transactional
+    @Transactional("transactionManager")
     public void borrowBook(String readerId, String copyId, int days) {
         Reader reader = readerRepository.findById(readerId)
                 .orElseThrow(() -> new RuntimeException("Reader not found in SQL"));
@@ -65,7 +65,7 @@ public class LibraryService {
         eventPublisher.publishEvent(new BookBorrowedEvent(readerId, copy.getPublicationId(), now, days));
     }
 
-    @Transactional
+    @Transactional("transactionManager")
     public void borrowBook(String readerId, String copyId) {
         borrowBook(readerId, copyId, 14);
     }
