@@ -1,4 +1,9 @@
 package pk.academic.library.academiclibrary.events;
 
-public record BookBorrowedEvent(String readerId, String publicationId) {
+import java.time.LocalDate;
+
+public record BookBorrowedEvent(String readerId,
+                                String publicationId,
+                                LocalDate borrowDate,
+                                int days) {
 }

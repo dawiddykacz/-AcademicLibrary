@@ -6,24 +6,25 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
+import pk.academic.library.academiclibrary.dto.PublicationPageDto;
+import pk.academic.library.academiclibrary.dto.ReaderProfileDto;
 import pk.academic.library.academiclibrary.events.BookBorrowedEvent;
-
-import pk.academic.library.academiclibrary.sql.BookCopyRepository;
-import pk.academic.library.academiclibrary.sql.BorrowingRepository;
-import pk.academic.library.academiclibrary.sql.ReaderRepository;
-import pk.academic.library.academiclibrary.sql.entities.BookCopy;
-import pk.academic.library.academiclibrary.sql.entities.Borrowing;
-import pk.academic.library.academiclibrary.sql.entities.CopyStatus;
-import pk.academic.library.academiclibrary.sql.entities.BorrowingStatus;
-import pk.academic.library.academiclibrary.sql.entities.Reader;
-
-import pk.academic.library.academiclibrary.neo4j.ReaderNodeRepository;
+import pk.academic.library.academiclibrary.mongo.ActivityEventRepository;
+import pk.academic.library.academiclibrary.mongo.documents.ActivityEvent;
+import pk.academic.library.academiclibrary.mongo.documents.Publication;
+import pk.academic.library.academiclibrary.mongo.PublicationRepository;
+import pk.academic.library.academiclibrary.neo4j.BookCopyRepository;
 import pk.academic.library.academiclibrary.neo4j.PublicationNodeRepository;
 import pk.academic.library.academiclibrary.neo4j.node.PublicationNode;
-import pk.academic.library.academiclibrary.neo4j.node.ReaderNode;
+import pk.academic.library.academiclibrary.sql.BorrowingRepository;
+import pk.academic.library.academiclibrary.sql.ReaderRepository;
+import pk.academic.library.academiclibrary.sql.entities.*;
 
+import java.time.Instant;
 import java.time.LocalDate;
-import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 @Service
 @RequiredArgsConstructor
@@ -32,12 +33,16 @@ public class LibraryService {
     private final BookCopyRepository bookCopyRepository;
     private final ReaderRepository readerRepository;
 
-    private final ReaderNodeRepository readerNodeRepository;
+    private final PublicationRepository publicationRepository;
+    private final ActivityEventRepository activityEventRepository;
+
     private final PublicationNodeRepository publicationNodeRepository;
+
     private final ApplicationEventPublisher eventPublisher;
 
+
     @Transactional
-    public void borrowBook(String readerId, String copyId) {
+    public void borrowBook(String readerId, String copyId, int days) {
         Reader reader = readerRepository.findById(readerId)
                 .orElseThrow(() -> new RuntimeException("Reader not found in SQL"));
 
@@ -51,22 +56,89 @@ public class LibraryService {
         copy.setStatus(CopyStatus.BORROWED);
         bookCopyRepository.save(copy);
 
-        Borrowing borrowing = new Borrowing(null, reader, copy, LocalDate.now(), LocalDate.now().plusDays(14), null, BorrowingStatus.ACTIVE);
+        LocalDate now = LocalDate.now();
+        Borrowing borrowing = new Borrowing(
+                null, reader, copy, now, now.plusDays(days), null, BorrowingStatus.ACTIVE
+        );
         borrowingRepository.save(borrowing);
 
-        eventPublisher.publishEvent(new BookBorrowedEvent(readerId, copy.getPublicationId()));
+        eventPublisher.publishEvent(new BookBorrowedEvent(readerId, copy.getPublicationId(), now, days));
+    }
+
+    @Transactional
+    public void borrowBook(String readerId, String copyId) {
+        borrowBook(readerId, copyId, 14);
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-    public void syncBorrowingToNeo4j(BookBorrowedEvent event) {
-        ReaderNode readerNode = readerNodeRepository.findById(event.readerId()).orElseThrow();
-        PublicationNode pubNode = publicationNodeRepository.findById(event.publicationId()).orElseThrow();
+    public void syncAfterBorrowCommit(BookBorrowedEvent event) {
+        publicationNodeRepository.mergeBorrowedRelationship(
+                event.readerId(),
+                event.publicationId(),
+                event.borrowDate(),
+                event.days()
+        );
 
-        if (readerNode.getBorrowedPublications() == null) {
-            readerNode.setBorrowedPublications(new HashSet<>());
+        ActivityEvent mongoEvent = new ActivityEvent(
+                null,
+                event.readerId(),
+                event.publicationId(),
+                "BORROW",
+                Instant.now(),
+                Map.of("days", event.days(), "borrowDate", event.borrowDate().toString())
+        );
+        activityEventRepository.save(mongoEvent);
+    }
+
+    /**
+     * Funkcja przekrojowa 1: Strona publikacji
+     * - Opis i recenzje z MongoDB
+     * - Dostępność egzemplarzy z SQL
+     * - Powiązane publikacje (cytowania) oraz "wypożyczyli też" z Neo4j
+     */
+    public PublicationPageDto getPublicationPage(String publicationId, String viewerReaderId) {
+        if (viewerReaderId != null) {
+            activityEventRepository.save(new ActivityEvent(
+                    null, viewerReaderId, publicationId, "VIEW", Instant.now(), Map.of()
+            ));
         }
 
-        readerNode.getBorrowedPublications().add(pubNode);
-        readerNodeRepository.save(readerNode);
+        Publication publication = publicationRepository.findById(publicationId)
+                .orElseThrow(() -> new RuntimeException("Publication not found in MongoDB"));
+
+        int availableCopies = bookCopyRepository
+                .findByPublicationIdAndStatus(publicationId, CopyStatus.AVAILABLE)
+                .size();
+
+        List<PublicationNode> cited = publicationNodeRepository.findRelatedByCitations(publicationId);
+        List<PublicationNode> alsoBorrowed = publicationNodeRepository.findAlsoBorrowed(publicationId);
+
+        return new PublicationPageDto(publication, availableCopies, cited, alsoBorrowed);
+    }
+
+    /**
+     * Funkcja przekrojowa 2: Profil czytelnika
+     * - Historia wypożyczeń z SQL
+     * - Ostatnio oglądane publikacje z dziennika zdarzeń w MongoDB
+     * - Rekomendacje lektur z Neo4j
+     */
+    public ReaderProfileDto getReaderProfile(String readerId) {
+        List<Borrowing> history = borrowingRepository.findByReaderId(readerId);
+
+        List<String> viewedPubIds = activityEventRepository
+                .findTop5ByReaderIdAndEventTypeOrderByTimestampDesc(readerId, "VIEW")
+                .stream()
+                .map(ActivityEvent::getPublicationId)
+                .distinct()
+                .toList();
+
+        List<Publication> recentlyViewed = viewedPubIds.stream()
+                .map(id -> publicationRepository.findById(id).orElse(null))
+                .filter(Objects::nonNull)
+                .toList();
+
+        List<PublicationNode> recommendations = publicationNodeRepository.findRecommendationsForReader(readerId);
+
+        return new ReaderProfileDto(readerId, history, recentlyViewed, recommendations);
     }
 }
