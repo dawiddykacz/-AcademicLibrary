@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import pk.academic.library.academiclibrary.BaseIntegrationTest;
 import pk.academic.library.academiclibrary.dto.PublicationPageDto;
+import pk.academic.library.academiclibrary.dto.ReaderProfileDto;
 import pk.academic.library.academiclibrary.mongo.ActivityEventRepository;
 import pk.academic.library.academiclibrary.mongo.documents.ActivityEvent;
 import pk.academic.library.academiclibrary.mongo.documents.Publication;
@@ -130,5 +131,27 @@ public class LibraryServiceIntegrationTest extends BaseIntegrationTest {
         List<ActivityEvent> events = activityEventRepository.findAll();
         assertEquals(1, events.size());
         assertEquals("VIEW", events.get(0).getEventType());
+    }
+
+    @Test
+    void shouldFetchReaderProfileCrossingAllThreeDatabases() {
+        libraryService.borrowBook(readerId, copyId);
+
+        libraryService.getPublicationPage(publicationId, readerId);
+
+        ReaderProfileDto dto = libraryService.getReaderProfile(readerId);
+
+        assertNotNull(dto);
+        assertEquals(readerId, dto.readerId());
+
+        assertFalse(dto.borrowingHistory().isEmpty(), "Historia wypożyczeń z SQL nie powinna być pusta");
+        assertEquals(copyId, dto.borrowingHistory().get(0).getBookCopy().getId());
+        assertEquals(publicationId, dto.borrowingHistory().get(0).getBookCopy().getPublicationId());
+
+        assertFalse(dto.recentlyViewed().isEmpty(), "Lista ostatnio oglądanych z MongoDB nie powinna być pusta");
+        assertEquals(publicationId, dto.recentlyViewed().get(0).getId());
+        assertEquals("Spring Boot Microservices", dto.recentlyViewed().get(0).getTitle());
+
+        assertNotNull(dto.recommendations(), "Lista rekomendacji z Neo4j nie powinna być nullem");
     }
 }
